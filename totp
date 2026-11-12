@@ -1,0 +1,133 @@
+#!/usr/bin/env python3
+"""totp - generate TOTP codes from secrets stored in the system keyring (secret-tool)."""
+import argparse
+import base64
+import getpass
+import hashlib
+import hmac
+import re
+import struct
+import subprocess
+import sys
+import time
+from urllib.parse import parse_qs, unquote, urlparse
+
+ATTR = "totp-cli"  # attribute marking our entries in the keyring
+
+
+def _secret_tool(*args, input=None):
+    try:
+        return subprocess.run(
+            ["secret-tool", *args], input=input, capture_output=True, text=True
+        )
+    except FileNotFoundError:
+        sys.exit("error: secret-tool not found (install libsecret-tools)")
+
+
+def hotp(secret_b32, counter, digits=6, algo="sha1"):
+    key = base64.b32decode(secret_b32.upper() + "=" * (-len(secret_b32) % 8))
+    mac = hmac.new(key, struct.pack(">Q", counter), getattr(hashlib, algo)).digest()
+    off = mac[-1] & 0x0F
+    code = (struct.unpack(">I", mac[off : off + 4])[0] & 0x7FFFFFFF) % 10**digits
+    return str(code).zfill(digits)
+
+
+def clean_secret(s):
+    s = re.sub(r"[\s-]", "", s)
+    try:
+        base64.b32decode(s.upper() + "=" * (-len(s) % 8))
+    except Exception:
+        sys.exit("error: secret is not valid base32")
+    return s.upper()
+
+
+def store(name, secret):
+    r = _secret_tool(
+        "store", f"--label=totp: {name}", "app", ATTR, "name", name, input=secret
+    )
+    if r.returncode:
+        sys.exit(f"error: could not store secret: {r.stderr.strip()}")
+
+
+def load(name):
+    r = _secret_tool("lookup", "app", ATTR, "name", name)
+    if r.returncode or not r.stdout.strip():
+        sys.exit(f"error: no secret named '{name}' (see: totp list)")
+    return r.stdout.strip()
+
+
+def names():
+    r = _secret_tool("search", "--all", "app", ATTR)
+    # Depending on the libsecret version, item metadata goes to stdout or stderr.
+    out = r.stdout + "\n" + r.stderr
+    return sorted(set(re.findall(r"^attribute\.name = (.*)$", out, re.M)))
+
+
+def cmd_add(a):
+    secret = a.secret
+    if secret and secret.startswith("otpauth://"):
+        u = urlparse(secret)
+        q = parse_qs(u.query)
+        secret = q["secret"][0]
+        a.name = a.name or unquote(u.path.lstrip("/")).split(":")[-1]
+    if not secret:
+        secret = getpass.getpass("Base32 secret (hidden): ")
+    if not a.name:
+        sys.exit("error: name required")
+    store(a.name, clean_secret(secret))
+    print(f"saved '{a.name}'")
+
+
+def cmd_get(a):
+    code = hotp(load(a.name), int(time.time()) // 30)
+    if a.copy:
+        for cmd in (["xclip", "-selection", "clipboard"], ["wl-copy"]):
+            try:
+                subprocess.run(cmd, input=code, text=True, check=True)
+                print(f"{code} (copied)", file=sys.stderr)
+                break
+            except (FileNotFoundError, subprocess.CalledProcessError):
+                continue
+        else:
+            print("warning: no clipboard tool (xclip/wl-copy)", file=sys.stderr)
+    print(code)
+
+
+def cmd_list(_):
+    for n in names():
+        print(n)
+
+
+def cmd_rm(a):
+    r = _secret_tool("clear", "app", ATTR, "name", a.name)
+    if r.returncode:
+        sys.exit(f"error: {r.stderr.strip()}")
+    print(f"removed '{a.name}'")
+
+
+def main():
+    p = argparse.ArgumentParser(prog="totp", description=__doc__)
+    sub = p.add_subparsers(dest="cmd", required=True)
+
+    s = sub.add_parser("add", help="store a secret (base32 or otpauth:// URI)")
+    s.add_argument("name", nargs="?")
+    s.add_argument("secret", nargs="?", help="omit to be prompted (recommended)")
+    s.set_defaults(f=cmd_add)
+
+    s = sub.add_parser("get", help="print the current code")
+    s.add_argument("name")
+    s.add_argument("-c", "--copy", action="store_true", help="copy to clipboard")
+    s.set_defaults(f=cmd_get)
+
+    sub.add_parser("list", help="list stored names").set_defaults(f=cmd_list)
+
+    s = sub.add_parser("rm", help="delete a secret")
+    s.add_argument("name")
+    s.set_defaults(f=cmd_rm)
+
+    a = p.parse_args()
+    a.f(a)
+
+
+if __name__ == "__main__":
+    main()
