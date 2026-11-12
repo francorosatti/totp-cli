@@ -17,15 +17,14 @@ ln -s "$PWD/totp" ~/.local/bin/totp
 ## Usage
 
 ```bash
-totp add github            # prompts for the base32 secret (hidden)
-totp add github 'otpauth://totp/...'   # or pass an otpauth:// URI
+totp add github            # prompts (hidden) for the base32 secret or an otpauth:// URI
 totp get github            # prints the current 6-digit code
 totp get -c github         # also copies it to the clipboard
 totp list                  # lists stored names
 totp rm github             # deletes an entry
 ```
 
-Prefer the hidden prompt for `add`: secrets passed as arguments end up in shell history.
+`add` deliberately has no way to pass the secret as an argument: it is always read from a hidden prompt, so it never ends up in shell history or the process list.
 
 ## Using it with Claude Code
 

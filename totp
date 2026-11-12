@@ -64,14 +64,14 @@ def names():
 
 
 def cmd_add(a):
-    secret = a.secret
-    if secret and secret.startswith("otpauth://"):
+    secret = getpass.getpass("Base32 secret or otpauth:// URI (hidden): ").strip()
+    if secret.startswith("otpauth://"):
         u = urlparse(secret)
         q = parse_qs(u.query)
+        if "secret" not in q:
+            sys.exit("error: otpauth URI has no secret")
         secret = q["secret"][0]
         a.name = a.name or unquote(u.path.lstrip("/")).split(":")[-1]
-    if not secret:
-        secret = getpass.getpass("Base32 secret (hidden): ")
     if not a.name:
         sys.exit("error: name required")
     store(a.name, clean_secret(secret))
@@ -111,7 +111,6 @@ def main():
 
     s = sub.add_parser("add", help="store a secret (base32 or otpauth:// URI)")
     s.add_argument("name", nargs="?")
-    s.add_argument("secret", nargs="?", help="omit to be prompted (recommended)")
     s.set_defaults(f=cmd_add)
 
     s = sub.add_parser("get", help="print the current code")
